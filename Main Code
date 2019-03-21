@@ -1,0 +1,565 @@
+//PE3= Analog to Digital input 0, for k thermistors
+//PB2= I2C, lcd
+//PB3= I2C, lcd
+//PF2= ControlSSR, PWM possible
+//
+//PF4= button power on off
+//PC1= buttong +
+//PB2=button -
+//
+//PA1= UART Debug Transmitt
+//
+
+
+#include "tm4c123gh6pm.h"
+#include "stdint.h"
+#include "stdbool.h"
+#include "driverlib/i2c.h"
+int maintainTemp();
+int buttonOnOff_Int_Handler();
+int buttonPlus_Int_Handler();
+int buttonMinus_Int_Handler();
+int init_Everything();
+int getTemperature();
+int DisplayLCD();
+
+volatile uint32_t setTemp=0; //the temperature to be set, in Celcius
+volatile uint32_t currentTemp=0;// the current temperature, in Celcius
+volatile uint32_t powerStatus=0;//1= on, 0=off
+
+#define MAX_TEMP 400 //maximum temperature
+#define MIN_TEMP 40 // minimum temperature
+#define BUTTON_TEMP_JUMP 10 //step size for button
+#define DEBOUNCE_SWITCH 50
+#define CLOCK_FREQUENCY 80000000
+#define true 1
+#define false 0
+
+#define I2C_MCS_ACK             0x00000008  // Data Acknowledge Enable
+#define I2C_MCS_DATACK          0x00000008  // Acknowledge Data
+#define I2C_MCS_ADRACK          0x00000004  // Acknowledge Address
+#define I2C_MCS_STOP            0x00000004  // Generate STOP
+#define I2C_MCS_START           0x00000002  // Generate START
+#define I2C_MCS_ERROR           0x00000002  // Error
+#define I2C_MCS_RUN             0x00000001  // I2C Master Enable
+#define I2C_MCS_BUSY            0x00000001  // I2C Busy
+#define I2C_MCR_MFE             0x00000010  // I2C Master Function Enable
+
+#define MAXRETRIES              5           // number of receive attempts before giving up
+
+
+#define UART_FR_TXFF            0x00000020  // UART Transmit FIFO Full
+#define UART_FR_RXFE            0x00000010  // UART Receive FIFO Empty
+#define UART_LCRH_WLEN_8        0x00000060  // 8 bit word length
+#define UART_LCRH_FEN           0x00000010  // UART Enable FIFOs
+#define UART_CTL_UARTEN         0x00000001  // UART Enable
+
+int main(void)
+{
+
+
+
+    return 0;
+}
+
+/* Disable interrupts by setting the I bit in the PRIMASK system register */
+void disable_interrupts(void) {
+    __asm("    CPSID  I\n"
+          "    BX     LR");
+}
+
+
+/* Enable interrupts by clearing the I bit in the PRIMASK system register */
+void enable_interrupts(void) {
+    __asm("    CPSIE  I\n"
+          "    BX     LR");
+}
+
+
+/* Enter low-power mode while waiting for interrupts */
+void wait_for_interrupts(void) {
+    __asm("    WFI\n"
+          "    BX     LR");
+}
+
+int delay(uint32_t millitime){
+    uint8_t iterationNumber=16;
+    uint32_t cyclesToWait= (millitime*(CLOCK_FREQUENCY/1000))/iterationNumber;
+
+    for ( cyclesToWait; cyclesToWait==0; cyclesToWait--){
+
+        asm("nop");
+    }
+    return true;
+}
+
+int maintainTemp(){}
+
+int buttonOnOff_Int_Handler(){
+    disable_interrupts();
+    powerStatus^=1;//toggles power status
+    delay(DEBOUNCE_SWITCH); //may need to tune later
+    enable_interrupts();
+    return true;
+}
+int buttonPlus_Int_Handler(){
+    disable_interrupts();
+    setTemp+=BUTTON_TEMP_JUMP;
+    delay(DEBOUNCE_SWITCH); //may need to tune later
+    enable_interrupts();
+    return true;
+}
+
+int buttonMinus_Int_Handler(){
+    disable_interrupts();
+     setTemp-=BUTTON_TEMP_JUMP;
+     delay(DEBOUNCE_SWITCH); //may need to tune later
+     enable_interrupts();
+     return true;
+}
+
+int init_Everything(){}
+int getTemperature(){}
+int DisplayLCD(){
+
+}
+
+
+
+
+
+void I2C_Init(void){
+  SYSCTL_RCGCI2C_R |= 0x0001;           // activate I2C0
+  SYSCTL_RCGCGPIO_R |= 0x0002;          // activate port B
+  while((SYSCTL_PRGPIO_R&0x0002) == 0){};// ready?
+
+  GPIO_PORTB_AFSEL_R |= 0x0C;           // 3) enable alt funct on PB2,3
+  GPIO_PORTB_ODR_R |= 0x08;             // 4) enable open drain on PB3 only
+  GPIO_PORTB_DEN_R |= 0x0C;             // 5) enable digital I/O on PB2,3
+                                        // 6) configure PB2,3 as I2C
+  GPIO_PORTB_PCTL_R = (GPIO_PORTB_PCTL_R&0xFFFF00FF)+0x00003300;
+  GPIO_PORTB_AMSEL_R &= ~0x0C;          // 7) disable analog functionality on PB2,3
+  I2C0_MCR_R = I2C_MCR_MFE;      // 9) master function enable
+  I2C0_MTPR_R = 24;              // 8) configure for 100 kbps clock
+  // 20*(TPR+1)*20ns = 10us, with TPR=24
+}
+
+// receives one byte from specified slave
+// Note for HMC6352 compass only:
+// Used with 'r' and 'g' commands
+// Note for TMP102 thermometer only:
+// Used to read the top byte of the contents of the pointer register
+//  This will work but is probably not what you want to do.
+uint8_t I2C_Recv(int8_t slave){
+  int retryCounter = 1;
+  do{
+    while(I2C0_MCS_R&I2C_MCS_BUSY){};// wait for I2C ready
+    I2C0_MSA_R = (slave<<1)&0xFE;    // MSA[7:1] is slave address
+    I2C0_MSA_R |= 0x01;              // MSA[0] is 1 for receive
+    I2C0_MCS_R = (0
+                        // & ~I2C_MCS_ACK     // negative data ack (last byte)
+                         | I2C_MCS_STOP     // generate stop
+                         | I2C_MCS_START    // generate start/restart
+                         | I2C_MCS_RUN);    // master enable
+    while(I2C0_MCS_R&I2C_MCS_BUSY){};// wait for transmission done
+    retryCounter = retryCounter + 1;        // increment retry counter
+  }                                         // repeat if error
+  while(((I2C0_MCS_R&(I2C_MCS_ADRACK|I2C_MCS_ERROR)) != 0) && (retryCounter <= MAXRETRIES));
+  return (I2C0_MDR_R&0xFF);          // usually returns 0xFF on error
+}
+// receives two bytes from specified slave
+// Note for HMC6352 compass only:
+// Used with 'A' commands
+// Note for TMP102 thermometer only:
+// Used to read the contents of the pointer register
+uint16_t I2C_Recv2(int8_t slave){
+  uint8_t data1,data2;
+  int retryCounter = 1;
+  do{
+    while(I2C0_MCS_R&I2C_MCS_BUSY){};// wait for I2C ready
+    I2C0_MSA_R = (slave<<1)&0xFE;    // MSA[7:1] is slave address
+    I2C0_MSA_R |= 0x01;              // MSA[0] is 1 for receive
+    I2C0_MCS_R = (0
+                         | I2C_MCS_ACK      // positive data ack
+                       //  & ~I2C_MCS_STOP    // no stop
+                         | I2C_MCS_START    // generate start/restart
+                         | I2C_MCS_RUN);    // master enable
+    while(I2C0_MCS_R&I2C_MCS_BUSY){};// wait for transmission done
+    data1 = (I2C0_MDR_R&0xFF);       // MSB data sent first
+    I2C0_MCS_R = (0
+                       //  & ~I2C_MCS_ACK     // negative data ack (last byte)
+                         | I2C_MCS_STOP     // generate stop
+                       //  & ~I2C_MCS_START   // no start/restart
+                         | I2C_MCS_RUN);    // master enable
+    while(I2C0_MCS_R&I2C_MCS_BUSY){};// wait for transmission done
+    data2 = (I2C0_MDR_R&0xFF);       // LSB data sent last
+    retryCounter = retryCounter + 1;        // increment retry counter
+  }                                         // repeat if error
+  while(((I2C0_MCS_R&(I2C_MCS_ADRACK|I2C_MCS_ERROR)) != 0) && (retryCounter <= MAXRETRIES));
+  return (data1<<8)+data2;                  // usually returns 0xFFFF on error
+}
+
+// sends one byte to specified slave
+// Note for HMC6352 compass only:
+// Used with 'S', 'W', 'O', 'C', 'E', 'L', and 'A' commands
+//  For 'A' commands, I2C_Recv2() should also be called
+// Note for TMP102 thermometer only:
+// Used to change the pointer register
+// Returns 0 if successful, nonzero if error
+uint32_t I2C_Send1(int8_t slave, uint8_t data1){
+  while(I2C0_MCS_R&I2C_MCS_BUSY){};// wait for I2C ready
+  I2C0_MSA_R = (slave<<1)&0xFE;    // MSA[7:1] is slave address
+  I2C0_MSA_R &= ~0x01;             // MSA[0] is 0 for send
+  I2C0_MDR_R = data1&0xFF;         // prepare first byte
+  I2C0_MCS_R = (0
+                    //   & ~I2C_MCS_ACK     // no data ack (no data on send)
+                       | I2C_MCS_STOP     // generate stop
+                       | I2C_MCS_START    // generate start/restart
+                       | I2C_MCS_RUN);    // master enable
+  while(I2C0_MCS_R&I2C_MCS_BUSY){};// wait for transmission done
+                                          // return error bits
+  return (I2C0_MCS_R&(I2C_MCS_DATACK|I2C_MCS_ADRACK|I2C_MCS_ERROR));
+}
+// sends two bytes to specified slave
+// Note for HMC6352 compass only:
+// Used with 'r' and 'g' commands
+//  For 'r' and 'g' commands, I2C_Recv() should also be called
+// Note for TMP102 thermometer only:
+// Used to change the top byte of the contents of the pointer register
+//  This will work but is probably not what you want to do.
+// Returns 0 if successful, nonzero if error
+uint32_t I2C_Send2(int8_t slave, uint8_t data1, uint8_t data2){
+  while(I2C0_MCS_R&I2C_MCS_BUSY){};// wait for I2C ready
+  I2C0_MSA_R = (slave<<1)&0xFE;    // MSA[7:1] is slave address
+  I2C0_MSA_R &= ~0x01;             // MSA[0] is 0 for send
+  I2C0_MDR_R = data1&0xFF;         // prepare first byte
+  I2C0_MCS_R = (0
+                     //  & ~I2C_MCS_ACK     // no data ack (no data on send)
+                    //   & ~I2C_MCS_STOP    // no stop
+                       | I2C_MCS_START    // generate start/restart
+                       | I2C_MCS_RUN);    // master enable
+  while(I2C0_MCS_R&I2C_MCS_BUSY){};// wait for transmission done
+                                          // check error bits
+  if((I2C0_MCS_R&(I2C_MCS_DATACK|I2C_MCS_ADRACK|I2C_MCS_ERROR)) != 0){
+    I2C0_MCS_R = (0                // send stop if nonzero
+                     //  & ~I2C_MCS_ACK     // no data ack (no data on send)
+                       | I2C_MCS_STOP     // stop
+                     //  & ~I2C_MCS_START   // no start/restart
+                     //  & ~I2C_MCS_RUN    // master disable
+                        );
+                                          // return error bits if nonzero
+    return (I2C0_MCS_R&(I2C_MCS_DATACK|I2C_MCS_ADRACK|I2C_MCS_ERROR));
+  }
+  I2C0_MDR_R = data2&0xFF;         // prepare second byte
+  I2C0_MCS_R = (0
+                      // & ~I2C_MCS_ACK     // no data ack (no data on send)
+                       | I2C_MCS_STOP     // generate stop
+                      // & ~I2C_MCS_START   // no start/restart
+                       | I2C_MCS_RUN);    // master enable
+  while(I2C0_MCS_R&I2C_MCS_BUSY){};// wait for transmission done
+                                          // return error bits
+  return (I2C0_MCS_R&(I2C_MCS_DATACK|I2C_MCS_ADRACK|I2C_MCS_ERROR));
+}
+// sends three bytes to specified slave
+// Note for HMC6352 compass only:
+// Used with 'w' and 'G' commands
+// Note for TMP102 thermometer only:
+// Used to change the contents of the pointer register
+// Returns 0 if successful, nonzero if error
+uint32_t I2C_Send3(int8_t slave, uint8_t data1, uint8_t data2, uint8_t data3){
+  while(I2C0_MCS_R&I2C_MCS_BUSY){};// wait for I2C ready
+  I2C0_MSA_R = (slave<<1)&0xFE;    // MSA[7:1] is slave address
+  I2C0_MSA_R &= ~0x01;             // MSA[0] is 0 for send
+  I2C0_MDR_R = data1&0xFF;         // prepare first byte
+  I2C0_MCS_R = (0
+                     //  & ~I2C_MCS_ACK     // no data ack (no data on send)
+                     //  & ~I2C_MCS_STOP    // no stop
+                       | I2C_MCS_START    // generate start/restart
+                       | I2C_MCS_RUN);    // master enable
+  while(I2C0_MCS_R&I2C_MCS_BUSY){};// wait for transmission done
+                                          // check error bits
+  if((I2C0_MCS_R&(I2C_MCS_DATACK|I2C_MCS_ADRACK|I2C_MCS_ERROR)) != 0){
+    I2C0_MCS_R = (0                // send stop if nonzero
+                     //  & ~I2C_MCS_ACK     // no data ack (no data on send)
+                       | I2C_MCS_STOP     // stop
+                     //  & ~I2C_MCS_START   // no start/restart
+                     //  & ~I2C_MCS_RUN   // master disable
+                       );
+                                          // return error bits if nonzero
+    return (I2C0_MCS_R&(I2C_MCS_DATACK|I2C_MCS_ADRACK|I2C_MCS_ERROR));
+  }
+  I2C0_MDR_R = data2&0xFF;         // prepare second byte
+  I2C0_MCS_R = (0
+                     //  & ~I2C_MCS_ACK     // no data ack (no data on send)
+                     //  & ~I2C_MCS_STOP    // no stop
+                     //  & ~I2C_MCS_START   // no start/restart
+                       | I2C_MCS_RUN);    // master enable
+  while(I2C0_MCS_R&I2C_MCS_BUSY){};// wait for transmission done
+                                          // check error bits
+  if((I2C0_MCS_R&(I2C_MCS_DATACK|I2C_MCS_ADRACK|I2C_MCS_ERROR)) != 0){
+    I2C0_MCS_R = (0                // send stop if nonzero
+                     //  & ~I2C_MCS_ACK     // no data ack (no data on send)
+                       | I2C_MCS_STOP     // stop
+                     //  & ~I2C_MCS_START   // no start/restart
+                     //  & ~I2C_MCS_RUN   // master disable
+                        );
+                                          // return error bits if nonzero
+    return (I2C0_MCS_R&(I2C_MCS_DATACK|I2C_MCS_ADRACK|I2C_MCS_ERROR));
+  }
+  I2C0_MDR_R = data3&0xFF;         // prepare third byte
+  I2C0_MCS_R = (0
+                    //   & ~I2C_MCS_ACK     // no data ack (no data on send)
+                       | I2C_MCS_STOP     // generate stop
+                    //   & ~I2C_MCS_START   // no start/restart
+                       | I2C_MCS_RUN);    // master enable
+  while(I2C0_MCS_R&I2C_MCS_BUSY){};// wait for transmission done
+                                          // return error bits
+  return (I2C0_MCS_R&(I2C_MCS_DATACK|I2C_MCS_ADRACK|I2C_MCS_ERROR));
+}
+
+
+
+
+
+
+
+
+
+//------------UART_Init------------
+// Initialize the UART for 115,200 baud rate (assuming 50 MHz UART clock),
+// 8 bit word length, no parity bits, one stop bit, FIFOs enabled
+// Input: none
+// Output: none
+void UART_Init(void){
+  SYSCTL_RCGCUART_R |= 0x01;            // activate UART0
+  SYSCTL_RCGCGPIO_R |= 0x01;            // activate port A
+  while((SYSCTL_PRGPIO_R&0x01) == 0){};
+  UART0_CTL_R &= ~UART_CTL_UARTEN;      // disable UART
+  UART0_IBRD_R = 27;                    // IBRD = int(50,000,000 / (16 * 115,200)) = int(27.1267)
+  UART0_FBRD_R = 8;                     // FBRD = int(0.1267 * 64 + 0.5) = 8
+                                        // 8 bit word length (no parity bits, one stop bit, FIFOs)
+  UART0_LCRH_R = (UART_LCRH_WLEN_8|UART_LCRH_FEN);
+  UART0_CTL_R |= UART_CTL_UARTEN;       // enable UART
+  GPIO_PORTA_AFSEL_R |= 0x03;           // enable alt funct on PA1-0
+  GPIO_PORTA_DEN_R |= 0x03;             // enable digital I/O on PA1-0
+                                        // configure PA1-0 as UART
+  GPIO_PORTA_PCTL_R = (GPIO_PORTA_PCTL_R&0xFFFFFF00)+0x00000011;
+  GPIO_PORTA_AMSEL_R &= ~0x03;          // disable analog functionality on PA
+}
+
+
+//------------UART_OutChar------------
+// Output 8-bit to serial port
+// Input: letter is an 8-bit ASCII character to be transferred
+// Output: none
+void UART_OutChar(char data){
+  while((UART0_FR_R&UART_FR_TXFF) != 0);
+  UART0_DR_R = data;
+}
+
+
+//------------UART_OutString------------
+// Output String (NULL termination)
+// Input: pointer to a NULL-terminated string to be transferred
+// Output: none
+void UART_OutString(char *pt){
+  while(*pt){
+    UART_OutChar(*pt);
+    pt++;
+  }
+}
+
+
+//-----------------------UART_OutUDec-----------------------
+// Output a 32-bit number in unsigned decimal format
+// Input: 32-bit number to be transferred
+// Output: none
+// Variable format 1-10 digits with no space before or after
+void UART_OutUDec(uint32_t n){
+// This function uses recursion to convert decimal number
+//   of unspecified length as an ASCII string
+  if(n >= 10){
+    UART_OutUDec(n/10);
+    n = n%10;
+  }
+  UART_OutChar(n+'0'); /* n is between 0 and 9 */
+}
+
+
+//--------------------------UART_OutUHex----------------------------
+// Output a 32-bit number in unsigned hexadecimal format
+// Input: 32-bit number to be transferred
+// Output: none
+// Variable format 1 to 8 digits with no space before or after
+void UART_OutUHex(uint32_t number){
+// This function uses recursion to convert the number of
+//   unspecified length as an ASCII string
+  if(number >= 0x10){
+    UART_OutUHex(number/0x10);
+    UART_OutUHex(number%0x10);
+  }
+  else{
+    if(number < 0xA){
+      UART_OutChar(number+'0');
+     }
+    else{
+      UART_OutChar((number-0x0A)+'A');
+    }
+  }
+}
+
+// This initialization function sets up the ADC according to the
+// following parameters.  Any parameters not explicitly listed
+// below are not modified:
+// Max sample rate: <=125,000 samples/second
+// Sequencer 0 priority: 1st (highest)
+// Sequencer 1 priority: 2nd
+// Sequencer 2 priority: 3rd
+// Sequencer 3 priority: 4th (lowest)
+// SS3 triggering event: always trigger
+// SS3 1st sample source: programmable using variable 'channelNum' [0:7]
+// SS3 interrupts: enabled but not promoted to controller
+void ADC0_InitAllTriggerSeq3(uint32_t channelNum){ volatile uint32_t delay;
+                    //    these are on GPIO_PORTE
+      SYSCTL_RCGCGPIO_R |= 0x10;
+      while((SYSCTL_PRGPIO_R&0x10) != 0x10){};
+
+
+  delay = SYSCTL_RCGCGPIO_R;      // 2) extra time for clock to stabilize
+  delay = SYSCTL_RCGCGPIO_R;
+                      //      Ain0 is on PE3
+      GPIO_PORTE_DIR_R &= ~0x08;  // 3.0) make PE3 input
+      GPIO_PORTE_AFSEL_R |= 0x08; // 4.0) enable alternate function on PE3
+      GPIO_PORTE_DEN_R &= ~0x08;  // 5.0) disable digital I/O on PE3
+      GPIO_PORTE_AMSEL_R |= 0x08; // 6.0) enable analog functionality on PE3
+
+  SYSCTL_RCGCADC_R |= 0x0001;   // 7) activate ADC0
+//  while((SYSCTL_PRADC_R&0x0001) != 0x0001){};   // good code, but not yet implemented in simulator
+  delay = SYSCTL_RCGCADC_R;         // extra time for clock to stabilize
+  delay = SYSCTL_RCGCADC_R;         // extra time for clock to stabilize
+  delay = SYSCTL_RCGCADC_R;         // extra time for clock to stabilize
+  delay = SYSCTL_RCGCADC_R;
+  ADC0_PC_R &= ~0xF;              // 9) clear max sample rate field
+  ADC0_PC_R |= 0x1;               //    configure for 125K samples/sec
+  ADC0_SSPRI_R = 0x3210;          // 10) Sequencer 3 is lowest priority
+  ADC0_ACTSS_R &= ~0x0008;        // 11) disable sample sequencer 3
+  ADC0_EMUX_R |= 0xF000;          // 12) seq3 is continuous trigger
+  ADC0_SSMUX3_R &= ~0x000F;       // 13) clear SS3 field
+  ADC0_SSMUX3_R += channelNum;    //     set channel
+  ADC0_SSCTL3_R = 0x0006;         // 14) no TS0 D0, yes IE0 END0
+  ADC0_IM_R &= ~0x0008;           // 15) disable SS3 interrupts
+  ADC0_ACTSS_R |= 0x0008;         // 16) enable sample sequencer 3
+}
+
+
+
+
+//------------ADC0_InSeq3------------
+// Busy-wait Analog to digital conversion
+// Input: none
+// Output: 12-bit result of ADC conversion
+uint32_t ADC0_InSeq3(void){  uint32_t result;
+  ADC0_PSSI_R = 0x0008;            // 1) initiate SS3
+  while((ADC0_RIS_R&0x08)==0){};   // 2) wait for conversion done
+    // if you have an A0-A3 revision number, you need to add an 8 usec wait here
+  result = ADC0_SSFIFO3_R&0xFFF;   // 3) read result
+  ADC0_ISC_R = 0x0008;             // 4) acknowledge completion
+  return result;
+}
+
+
+// Make PF2 an output, enable digital I/O, ensure alt. functions off
+void SSR_Init(void){
+  SYSCTL_RCGCGPIO_R |= 0x20;        // 1) activate clock for Port F
+  while((SYSCTL_PRGPIO_R&0x20)==0){}; // allow time for clock to start
+                                    // 2) no need to unlock PF2
+  GPIO_PORTF_PCTL_R &= ~0x00000F00; // 3) regular GPIO
+  GPIO_PORTF_AMSEL_R &= ~0x04;      // 4) disable analog function on PF2
+  GPIO_PORTF_DIR_R |= 0x04;         // 5) set direction to output
+  GPIO_PORTF_AFSEL_R &= ~0x04;      // 6) regular port function
+  GPIO_PORTF_DEN_R |= 0x04;         // 7) enable digital port
+
+}
+
+// Make PF2 high
+void SSR_On(void){
+
+  GPIO_PORTF_DATA_R |= 0x04;
+}
+// Make PF2 low
+void SSR_Off(void){
+
+ GPIO_PORTF_DATA_R &= ~0x04;
+}
+
+
+volatile uint32_t FallingEdges = 0;
+
+
+void EdgeCounter_Init(void){
+  SYSCTL_RCGCGPIO_R |= 0x00000020; // (a) activate clock for port F
+  FallingEdges = 0;             // (b) initialize counter
+  GPIO_PORTF_DIR_R &= ~0x10;    // (c) make PF4 in (built-in button)
+  GPIO_PORTF_AFSEL_R &= ~0x10;  //     disable alt funct on PF4
+  GPIO_PORTF_DEN_R |= 0x10;     //     enable digital I/O on PF4
+  GPIO_PORTF_PCTL_R &= ~0x000F0000; // configure PF4 as GPIO
+  GPIO_PORTF_AMSEL_R = 0;       //     disable analog functionality on PF
+  GPIO_PORTF_PUR_R |= 0x10;     //     enable weak pull-up on PF4
+  GPIO_PORTF_IS_R &= ~0x10;     // (d) PF4 is edge-sensitive
+  GPIO_PORTF_IBE_R &= ~0x10;    //     PF4 is not both edges
+  GPIO_PORTF_IEV_R &= ~0x10;    //     PF4 falling edge event
+  GPIO_PORTF_ICR_R = 0x10;      // (e) clear flag4
+  GPIO_PORTF_IM_R |= 0x10;      // (f) arm interrupt on PF4 *** No IME bit as mentioned in Book ***
+  NVIC_PRI7_R = (NVIC_PRI7_R&0xFF00FFFF)|0x00A00000; // (g) priority 5
+  NVIC_EN0_R = 0x40000000;      // (h) enable interrupt 30 in NVIC
+  //EnableInterrupts();           // (i) Clears the I bit
+}
+
+#define NVIC_EN0_INT2           0x00000004  // Interrupt 2 enable
+#define NVIC_EN0_INT4           0x00000010  // Interrupt 4 enable
+
+volatile uint32_t SW1, SW2;
+void VectorButtons_Init(void){
+  DisableInterrupts();
+  // activate port C and port E
+  SYSCTL_RCGCGPIO_R |= 0x14;  // enable ports C and E
+  SW1 = 0;                    // clear semaphores
+  SW2 = 0;
+  GPIO_PORTC_DIR_R &= ~0x10;  // make PC4 in (PC4 button) (default setting)
+  GPIO_PORTC_AFSEL_R &= ~0x10;// disable alt funct on PC4 (default setting)
+  GPIO_PORTC_DEN_R |= 0x10;   // enable digital I/O on PC4
+  GPIO_PORTC_PCTL_R &= ~0x000F0000;// configure PC4 as GPIO (default setting)
+  GPIO_PORTC_AMSEL_R &= ~0x10;// disable analog functionality on PC4 (default setting)
+  GPIO_PORTC_IS_R &= ~0x10;   // PC4 is edge-sensitive (default setting)
+  GPIO_PORTC_IBE_R &= ~0x10;  // PC4 is not both edges (default setting)
+  GPIO_PORTC_IEV_R |= 0x10;   // PC4 rising edge event
+  GPIO_PORTC_ICR_R = 0x10;    // clear flag4
+  GPIO_PORTC_IM_R |= 0x10;    // enable interrupt on PC4
+                              // GPIO PortC=priority 2
+  NVIC_PRI0_R = (NVIC_PRI0_R&0xFF00FFFF)|0x00400000; // bits 21-23
+  GPIO_PORTE_DIR_R &= ~0x10;  // make PE4 in (PE4 button) (default setting)
+  GPIO_PORTE_AFSEL_R &= ~0x10;// disable alt funct on PE4 (default setting)
+  GPIO_PORTE_DEN_R |= 0x10;   // enable digital I/O on PE4
+                              // configure PE4 as GPIO (default setting)
+  GPIO_PORTE_PCTL_R = (GPIO_PORTE_PCTL_R&0xFFF0FFFF)+0x00000000;
+  GPIO_PORTE_AMSEL_R &= ~0x10;// disable analog functionality on PE4 (default setting)
+  GPIO_PORTE_IS_R &= ~0x10;   // PE4 is edge-sensitive (default setting)
+  GPIO_PORTE_IBE_R &= ~0x10;  // PE4 is not both edges (default setting)
+  GPIO_PORTE_IEV_R |= 0x10;   // PE4 rising edge event
+  GPIO_PORTE_ICR_R = 0x10;    // clear flag4
+  GPIO_PORTE_IM_R |= 0x10;    // enable interrupt on PE4
+                              // GPIO PortE=priority 2
+  NVIC_PRI1_R = (NVIC_PRI1_R&0xFFFFFF00)|0x00000040; // bits 5-7
+                              // enable interrupts 2 and 4 in NVIC
+  NVIC_EN0_R = (NVIC_EN0_INT2+NVIC_EN0_INT4);
+  EnableInterrupts();
+}
+void GPIOPortC_Handler(void){
+  GPIO_PORTC_ICR_R = 0x10;    // acknowledge flag4
+  SW1 = 1;                    // signal SW1 occurred
+}
+void GPIOPortE_Handler(void){
+  GPIO_PORTE_ICR_R = 0x10;    // acknowledge flag4
+  SW2 = 1;                    // signal SW2 occurred
+}
+
